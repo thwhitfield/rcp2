@@ -8,6 +8,8 @@ The following top-level functions can be useful for reading raw data.
 """
 import geopandas
 import pandas as pd
+import os
+
 from src import utils
 
 
@@ -149,3 +151,28 @@ def read_fire_stations():
     """
     path = utils.DATA["master"] / "Fire Station Location Data.csv"
     return pd.read_csv(path)
+
+
+def read_nfirs(data_dir):
+    """
+    Read single year of raw nfirs data.
+    
+    Args:
+        data_dir: nfirs directory with one year of data
+    
+    Returns:
+        nfirs_dict: dictionary containing raw basic, address, and fire dataframes
+    """
+    
+    # Read tables and switch columns to lower case
+    basic = pd.read_csv(os.path.join(data_dir, 'basicincident.txt'), sep = '^', encoding = 'latin-1', low_memory = False)
+    address = pd.read_csv(os.path.join(data_dir, 'incidentaddress.txt'), sep = '^', encoding = 'latin-1', low_memory = False)
+    fire = pd.read_csv(os.path.join(data_dir, 'fireincident.txt'), sep = '^', encoding = 'latin-1', low_memory = False)
+    
+    basic.columns = basic.columns.str.lower()
+    address.columns = address.columns.str.lower()
+    fire.columns = fire.columns.str.lower()
+    
+    nfirs_dict = {'basic':basic, 'address':address, 'fire':fire}
+    
+    return(nfirs_dict)
