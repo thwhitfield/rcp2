@@ -2,26 +2,22 @@ import pandas as pd
 import numpy as np
 import os
 from src import utils
+from src.data.raw import read_nfirs
 
-def ingest_raw_nfirs_data(data_dir):
+def ingest_raw_nfirs_data(nfirs_dict):
     """Ingest single year of raw nfirs data, perform basic cleaning, merging, and filtering to 
     generate one years worth of nfirs data ready to be geocoded.
     
     Args:
-        data_dir: nfirs directory with one year of data
+        nfirs_dict: dictionary containing raw basic, address, and fire dataframes for a single year
         
     Returns:
         pandas dataframe of cleaned nfirs data (not geocoded yet)
     """
     
-    # Read tables and switch columns to lower case
-    basic = pd.read_csv(os.path.join(data_dir, 'basicincident.txt'), sep = '^', encoding = 'latin-1', low_memory = False)
-    address = pd.read_csv(os.path.join(data_dir, 'incidentaddress.txt'), sep = '^', encoding = 'latin-1', low_memory = False)
-    fire = pd.read_csv(os.path.join(data_dir, 'fireincident.txt'), sep = '^', encoding = 'latin-1', low_memory = False)
-    
-    basic.columns = basic.columns.str.lower()
-    address.columns = address.columns.str.lower()
-    fire.columns = fire.columns.str.lower()
+    basic = nfirs_dict['basic']
+    address = nfirs_dict['address']
+    fire = nfirs_dict['fire']
     
     # Columns to merge the 3 datasets on
     merge_cols = ['state','fdid','inc_date','inc_no','exp_no']
@@ -108,13 +104,66 @@ def ingest_raw_nfirs_data(data_dir):
     df['unique_id'] = df['state'] + '_' + df['fdid'] + '_' + df['inc_date'].astype(str) + '_' + df['inc_no'] + '_' + df['exp_no']
     
     # Subset the data by the columns we've selected for further use
-    usecols = ['state','fdid','st_fdid','dept_sta','inc_date','inc_no','exp_no','inc_type','prop_use','address','city','state_id',
-              'zip5','oth_inj','oth_death','prop_loss','cont_loss','tot_loss','detector','det_type','det_power',
-              'det_operat','det_effect','det_fail','aes_pres','aes_type','aes_oper','no_spr_op','aes_fail','unique_id']
-    
+    usecols = ['state','fdid','st_fdid','dept_sta','inc_date','inc_no','exp_no','inc_type','prop_use','aid','address','apt_no','x_street',
+               'city','state_id','zip5','oth_inj','oth_death','prop_loss','cont_loss','tot_loss','detector','det_type',
+               'det_power','det_operat','det_effect','det_fail','aes_pres','aes_type','aes_oper','no_spr_op','aes_fail','unique_id']
+        
     df = df[usecols]
     
     return(df)
+
+def dedupe_nfirs(df):
+    """De-duplicate the nfirs dataset. Ensure that a single fire in a single home 
+    isn't counted twice. For buildings with more than one household (apartment buildings,
+    condos, etc.), roll those up into a single record.
+    
+    Args:
+        df: pandas dataframe containing cleaned nfirs data (output of ingest_raw_nfirs_data function)
+        
+    Returns:
+        df2: pandas dataframe de-duplicated nfirs data (not geocoded yet)
+    """
+    
+    df['full_address_date'] = df['address'].str.strip() + ', ' + df['city'] + ', ' + df['state_id'] + ' - ' + df['inc_date'].astype(str)
+    
+    # Aggregations to do to get needed data
+    agg_funcs1 = {
+        'oth_inj':['sum','max'],
+        'oth_death':['sum','max'],
+        'prop_loss':['sum','max'],
+        'cont_loss':['sum','max'],
+        'tot_loss':['sum','max'],
+        'apt_no':'nunique',
+        'st_fdid':'nunique',
+        'exp_no':'nunique',
+        'state':'size'
+    }
+
+    # Group by full_address_date combination, and perform aggregations
+    df_rollup = (df.groupby('full_address_date')
+                 .agg(agg_funcs1)
+                 .rename(columns = {'state':'num_records'})
+                )
+
+    df_rollup.columns = df_rollup.columns.map('_'.join)
+
+    # Choose sum or max based on whether the record refers to multiple apartments or not (sum if multiple apartments, max if not)
+    mask1 = df_rollup['apt_no_nunique'] > 1
+    base_col_names = ['oth_inj','oth_death','prop_loss','cont_loss','tot_loss']
+    for name in base_col_names:
+        df_rollup[name] = np.where(mask1, df_rollup[name + '_sum'], df_rollup[name + '_max'])
+
+    dropcols = [name + '_sum' for name in base_col_names] + [name + '_max' for name in base_col_names]
+    df_rollup = df_rollup.drop(dropcols, axis=1)
+    
+    dropcols2 = [col for col in df.columns if col in df_rollup.columns]
+    df2 = (df.drop(dropcols2, axis=1)
+           .merge(df_rollup, how = 'right', left_on='full_address_date', right_index=True)
+           .drop_duplicates('full_address_date')
+           .drop('full_address_date', axis = 1)
+          )
+    
+    return(df2)
 
 def ingest_all_nfirs():
     
@@ -134,8 +183,10 @@ def ingest_all_nfirs():
 
         output_name = f'nfirs_cleaned_{year}.csv'
         output_path = os.path.join(interim_nfirs_path, output_name)
-
-        df = ingest_raw_nfirs_data(year_path)
+        
+        nfirs_dict = read_nfirs(year_path)
+        df = ingest_raw_nfirs_data(nfirs_dict)
+        df = dedupe_nfirs(df)
         df.to_csv(output_path, index = False)
     
     return
